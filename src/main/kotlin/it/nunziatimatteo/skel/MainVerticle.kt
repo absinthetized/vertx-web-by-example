@@ -1,5 +1,6 @@
 /*
-THIS IS THE FIRST EXAMPLE OF HOW TO USE VERT:X WEB. YOU CAN TEST THE ROUTES OF THIS FILE FROM YOUR BROWSER AS THEY ARE ONLY HTTP GETs
+THIS IS THE SECOND EXAMPLE OF HOW TO USE VERT.X WEB. YOU CAN TEST THE ROUTES VIA CURL OR SIMILAR
+e.g. the 'deleteAuthorByIdFails' can be reached by: curl -X DELETE http://http://localhost:8080/deleteAuthorByIdFails/22
  */
 
 package it.nunziatimatteo.skel
@@ -9,42 +10,39 @@ import io.vertx.core.Promise
 import io.vertx.core.json.Json
 import io.vertx.ext.web.Router
 import io.vertx.ext.web.RoutingContext
+import io.vertx.ext.web.handler.BodyHandler
 import io.vertx.ext.web.handler.ResponseContentTypeHandler
 
-//we need to derive from an AbstractVerticle class to start the app.
 class MainVerticle : AbstractVerticle() {
 
-  //this is the default way to tell the app we have to 'start' from here...
   override fun start(startPromise: Promise<Void>) {
-    val theServer = vertx.createHttpServer() //this is val, that is a constant, and it is the one and only http server of our app.
-    val mainRouter = Router.router(vertx) //again a constant, this is the router responsible to 'attach' a function to each http end-point
-    mainRouter.route("/*").handler(ResponseContentTypeHandler.create()) //tell vert.x that we want it to automatically set the header of our responses, based on the 'produces()' clause. see routes examples.
+    val theServer = vertx.createHttpServer() //the one and only http server of our app.
+    val mainRouter = Router.router(vertx) //this is the router responsible to 'attach' a function to each http end-point
+    mainRouter.route("/*").handler(ResponseContentTypeHandler.create()) //tell vert.x that we want it to automatically set the header of our responses
 
+    /* NEW NEW NEW */
+    mainRouter.route().handler(BodyHandler.create()) //THIS IS NEW AND IS USED TO EXTRACT BODIES FROM REQUESTS
+                                                     //note you can either use route("/*") or route() to mean 'all routes'
+
+    /* NEW NEW NEW */
+    mainRouter.route().failureHandler { frc -> this.manageFailure(frc) } // This will be called for failures that occur when routing
 
   /* ------------------------------------------------------------------------------------------------------------------ */
   /* here we can put our routes, that is the relation between an http end-point and a function responsible to manage it */
   /* ------------------------------------------------------------------------------------------------------------------ */
 
-    //an hello world example. this is an http GET for the uri localhost:8080/hello-world
-    //so we use the get("hello-world") to create the route.
-    //we also say that the output (the product) is in plain text, so we set the produces("text/plain")
-    //eventually we pass the route to an handler.
-    //the handler is super simple: it is a kotlin lambda. kotlin lambdas have:
-    // - 2 curly brackets {}
-    // - an input (ctx)
-    // - an arrow '->'
-    // - a function body.
-    //it is good practice to make the lambda body a function on its turn. here we use the getHelloWorld() function. see it for more details
-    mainRouter.get("/hello-world").produces("text/plain").handler { ctx -> getHelloWorld(ctx) }
-
-    //this is a prettier example: still a GET, but we expect to have a parameter in the uri: a name.
-    //also we expect to return a nice HTML response.
-    mainRouter.get("/hello-world/:name").produces("text/html").handler { ctx -> getNamedHelloWorldInHTML(ctx) }
-
-    //this time we mock up a request info about a book's author by knowing her id. the response is a JSON
-    //this will let us use the underlying Jackson library to map POJOs to JSON
+    //this time we mock up a request info about a book's author by knowing her id. the response is a JSON.
     mainRouter.get("/authorById/:id").produces("text/json").handler { ctx -> getAuthorById(ctx) }
 
+    //this time we are asked to DELETE an author by id, this is useful to mock an error of a request
+    //note that we do not produce anything here. we just return an error status. This error status voluntarily redirects to the failure handler
+    mainRouter.delete("/deleteAuthorByIdFails/:id").handler { ctx -> deleteAuthorByIdFails(ctx) }
+
+    //this is a PUT and we can use this to learn how to receive a JSON from the request body,
+    //this also make use of the new installed 'BodyHandler'.
+    //among other things we can send wrong contents in the JSON or partial contents. This will let us
+    //experiment with exception handling the the route handler, or, better, with the 'failureHandler'
+    mainRouter.put("/addNewAuthor").consumes("application/json").handler { ctx -> addNewAuthor(ctx) }
 
   /* ------------------------------------------------------------------------------------------------------------------ */
   /* ------------------------------------------------------------------------------------------------------------------ */
@@ -61,40 +59,54 @@ class MainVerticle : AbstractVerticle() {
       }
     }
   }
+
+  //here we centralize our failure management. PLEASE NOTE: failure handlers can be assigned
+  //in more fine grained ways. each and every route can have both a handler and a failure handler
+  //
+  //Also please not that in a real app you would use this to redirect to a custom error page...
+  private fun manageFailure(frc: RoutingContext) {
+    //let provide a decent message back to the user/tester
+    val response = frc.response()
+
+    //as first store the vrt.x status code and the returned content type
+    response.putHeader("content-type", "text/html")
+
+    /* build a proper message */
+
+    //get the request URI causing the issue
+    val uri: String = frc.normalisedPath()
+    val codeString: String = frc.statusCode().toString()
+
+    //write the reason of the failure
+    val error: String = frc.failure().localizedMessage
+
+    //the get also the cause
+    val cause: String = frc.failure().cause.toString()
+
+    //build the output by using multiline string literals (""")
+    // and adding the HTML injected lang feature of IntelliJ (if you use it)
+
+    //language=HTML
+    return response.end("""
+      <h3>Request to end point $uri failed with status code $codeString</h3></br>
+      <h4>The internal server error was:</h4></br>
+      <p><strong>$error</strong></p></br>
+      <h4>The internal exception (if any) was:</h4></br>
+      <p>$cause</p>
+    """.trimIndent())
+  }
 }
 
 /* HERE ARE SOME ROUTES EXAMPLES. DO NOT KEEP YOUR FUNCTION BODIES HERE, RATHER PUT THEM IN THE APPROPRIATE CLASSPATH */
 
-//anything can be a route handler, there is no constrain, but usually you want the handler to be a function with the routing context as input
-//and a routing response as output.
-//the routing context, or ctx for short, is an object containing all the relevant info about an http request. As relevant examples,
-//it contains the request with its header and body, it allows us to create a response an also contains auth info - if available.
-//the function MUST return a response and the response object must by finalized with the end() method before returning it.
-fun getHelloWorld(ctx: RoutingContext) // the return type is inferred
-{
-  //allocate a response for the given context
-  val response = ctx.response()
-  //put some content into the body. no need to specify the content type
-  // as we have the ResponseContentTypeHandler.create() set globally for all routes
-  return response.end("Hello world from Vert.x!")
-}
-
-fun getNamedHelloWorldInHTML(ctx: RoutingContext) {
-  //get the 'name' parameter from the request - this time we have to explicitly inform kotlin that this is a string
-  val givenName: String = ctx.request().getParam("name")
-
-  val response = ctx.response()
-  //note the HTML tags in the response. Also note that we can use 'macro substitution' to format the return text
-  return response.end("<h3>Hello $givenName from Vert.x!</h3>")
-}
-
-//a data class is a class with only members, no methods... if you come from Java this is like a @Data decorated class with Lombok
-//this is an example of how you can build a data class in kotlin, even if there are more nice ways when you start using plugins for JPA and similar stuff
-//a data class must have at least 1 param in the constructor to identify it. other params can be placed into the c'tor or in the class body
-data class Author(var id: Int) {
-  lateinit var first_name: String //lateinit means we do not default init and we expect to init this stuff later
-  lateinit var last_name: String
-  lateinit var nationality: String
+/* NEW NEW NEW */
+//we have modified the author class to let encode AND DECODE IT.
+//This is no more a data class but a simple class!!! Json.decode() is not able to manage data classes!!!! (see the PUT example)
+class Author {
+  var id: Int = -1
+  var first_name: String = ""
+  var last_name: String = ""
+  var nationality: String = ""
 }
 
 fun getAuthorById(ctx: RoutingContext) {
@@ -103,7 +115,8 @@ fun getAuthorById(ctx: RoutingContext) {
 
   //here we should make some query in some DB and get back the info...
   //... let pretend we have and just populate a POJO
-  val ourAuthor = Author(id=0)
+  val ourAuthor = Author()
+  ourAuthor.id = id
   ourAuthor.first_name = "John"
   ourAuthor.last_name = "Grisham"
   ourAuthor.nationality = "UK"
@@ -115,4 +128,34 @@ fun getAuthorById(ctx: RoutingContext) {
   val payload = Json.encode(ourAuthor)
 
   return response.end(payload)
+}
+
+//this time we have no response to fill the body of: we just failed.
+//by setting the fail filed we redirect to the failure handler
+fun deleteAuthorByIdFails(ctx: RoutingContext) {
+  val response = ctx.fail(404)
+}
+
+//test with:
+// curl -X PUT http://localhost:8080/addNewAuthor -H "Content-Type: application/json" -d "{\"id\":\"40\"}"
+// to see what happens with a partial info.
+//
+//or try with a full json:
+//curl -X PUT http://localhost:8080/addNewAuthor -H "Content-Type: application/json" -d "{\"id\":\"40\", \"first_name\":\"pippo\", \"last_name\":\"bill\", \"nationality\":\"belgian\"}"
+//
+//or try with an empty one...
+//
+//also try with a totally wrong JSON like:
+//curl -X PUT http://localhost:8080/addNewAuthor -H "Content-Type: application/json" -d "{\"forecast\":\"cloudy\"}"
+//or a mixed one!:
+//curl -X PUT http://localhost:8080/addNewAuthor -H "Content-Type: application/json" -d "{\"forecast\":\"cloudy\", \"first_name\":\"pippo\"}"
+fun addNewAuthor(ctx: RoutingContext) {
+  //get the payload
+  val newAuthorInfoAsString = ctx.bodyAsString
+  //this is the opposite of getAuthorById:
+  //we convert the stringified JSON in a JSON object, we map it on our class!
+  val newAuthor: Author = Json.decodeValue(newAuthorInfoAsString, Author::class.java)
+
+  //nothing to do with response just return an empty one with default status of 200
+  return ctx.response().end()
 }
