@@ -1,7 +1,33 @@
 /*
-THIS IS THE SECOND EXAMPLE OF HOW TO USE VERT.X WEB. YOU CAN TEST THE ROUTES VIA CURL OR SIMILAR
-e.g. the 'deleteAuthorByIdFails' can be reached by: curl -X DELETE http://http://localhost:8080/deleteAuthorByIdFails/22
- */
+THIS IS THE THIRD EXAMPLE OF HOW TO USE VERT.X WEB. YOU CAN TEST THE ROUTES VIA CURL OR SIMILAR
+here we introduce a JPA backend. for this task we have added the kotlin-maven-plugin in the maven pom.xml file! check it!
+in the same pom.xml we have added Hibernate as JPA implementation.
+Eventually we have added the /src/main/resources/META-INF/persistence.xml required to config JPA connections
+
+NOTE: the persistance.xml file required by JPA expect you to have a local postgres with a db named test-db and the following auth:
+user: test-user
+password: test-users
+a dump of the initial DB is available in the root of these sources (Postgres 12) as 'vert.x-web-howto-DB-exercise-3'
+
+NOTE2: Hibernate is a blocking technology, you will see some complains (java exceptions) at boot due to vert.x,
+don't mind we will fix them in next exercise
+
+Just a few numbers from my 5yo thinkpad T440:
+
+non JPA fat jar
+---------------
+size on disk: 11 MB
+ram (2 requests): 75 MB
+boot in:  around 4 secs
+
+JPA fat jar
+-----------
+size on disk: 25 MB (26 with the jdbc but this is required anyway)
+ram (no requests just connection): 370 MB
+boot in:  around 12 secs
+
+Be straight: I hate ORM but I need this for my job. so here we are!
+*/
 
 package it.nunziatimatteo.skel
 
@@ -12,37 +38,46 @@ import io.vertx.ext.web.Router
 import io.vertx.ext.web.RoutingContext
 import io.vertx.ext.web.handler.BodyHandler
 import io.vertx.ext.web.handler.ResponseContentTypeHandler
+import javax.persistence.*
+
 
 class MainVerticle : AbstractVerticle() {
 
   override fun start(startPromise: Promise<Void>) {
-    val theServer = vertx.createHttpServer() //the one and only http server of our app.
-    val mainRouter = Router.router(vertx) //this is the router responsible to 'attach' a function to each http end-point
-    mainRouter.route("/*").handler(ResponseContentTypeHandler.create()) //tell vert.x that we want it to automatically set the header of our responses
+    val theServer = vertx.createHttpServer()
+    val mainRouter = Router.router(vertx)
+
+    mainRouter.route().handler(ResponseContentTypeHandler.create()) //auto response content-type in headers for all routes
+    mainRouter.route().handler(BodyHandler.create()) //request body extractor and formatter for all routes
+    mainRouter.route().failureHandler { frc -> this.manageFailure(frc) } //failure manager for all routes
 
     /* NEW NEW NEW */
-    mainRouter.route().handler(BodyHandler.create()) //THIS IS NEW AND IS USED TO EXTRACT BODIES FROM REQUESTS
-                                                     //note you can either use route("/*") or route() to mean 'all routes'
-
+    val emf = Persistence.createEntityManagerFactory( "org.hibernate.tutorial.jpa" ) //init JPA from persistence.xml
+    
     /* NEW NEW NEW */
-    mainRouter.route().failureHandler { frc -> this.manageFailure(frc) } // This will be called for failures that occur when routing
+    // since now we can think of passing always 2 args to the route handlers: the context (ctx) and the entity manager factory (emf)
+    // in that way they will be able to manipulate both REST and CRUD!
+    // if the em is not required don't worry, this is passed by ref and will not hurt
 
   /* ------------------------------------------------------------------------------------------------------------------ */
   /* here we can put our routes, that is the relation between an http end-point and a function responsible to manage it */
   /* ------------------------------------------------------------------------------------------------------------------ */
 
     //this time we mock up a request info about a book's author by knowing her id. the response is a JSON.
-    mainRouter.get("/authorById/:id").produces("text/json").handler { ctx -> getAuthorById(ctx) }
+    mainRouter.get("/authorById/:id").produces("text/json").handler { ctx -> getAuthorById(ctx, emf) }
 
     //this time we are asked to DELETE an author by id, this is useful to mock an error of a request
     //note that we do not produce anything here. we just return an error status. This error status voluntarily redirects to the failure handler
-    mainRouter.delete("/deleteAuthorByIdFails/:id").handler { ctx -> deleteAuthorByIdFails(ctx) }
+    mainRouter.delete("/deleteAuthorByIdFails/:id").handler { ctx -> deleteAuthorByIdFails(ctx, emf) }
+
+    /* NEW NEW NEW */
+    //this time we return the json with the persisted object!
 
     //this is a PUT and we can use this to learn how to receive a JSON from the request body,
     //this also make use of the new installed 'BodyHandler'.
     //among other things we can send wrong contents in the JSON or partial contents. This will let us
     //experiment with exception handling the the route handler, or, better, with the 'failureHandler'
-    mainRouter.put("/addNewAuthor").consumes("application/json").handler { ctx -> addNewAuthor(ctx) }
+    mainRouter.put("/addNewAuthor").consumes("application/json").produces("application/json").handler { ctx -> addNewAuthor(ctx, emf) }
 
   /* ------------------------------------------------------------------------------------------------------------------ */
   /* ------------------------------------------------------------------------------------------------------------------ */
@@ -88,11 +123,11 @@ class MainVerticle : AbstractVerticle() {
 
     //language=HTML
     return response.end("""
-      <h3>Request to end point $uri failed with status code $codeString</h3></br>
+      <p><h3>Request to end point $uri failed with status code $codeString</h3></br>
       <h4>The internal server error was:</h4></br>
-      <p><strong>$error</strong></p></br>
+      $error</br>
       <h4>The internal exception (if any) was:</h4></br>
-      <p>$cause</p>
+      $cause</p>
     """.trimIndent())
   }
 }
@@ -100,26 +135,32 @@ class MainVerticle : AbstractVerticle() {
 /* HERE ARE SOME ROUTES EXAMPLES. DO NOT KEEP YOUR FUNCTION BODIES HERE, RATHER PUT THEM IN THE APPROPRIATE CLASSPATH */
 
 /* NEW NEW NEW */
-//we have modified the author class to let encode AND DECODE IT.
-//This is no more a data class but a simple class!!! Json.decode() is not able to manage data classes!!!! (see the PUT example)
+//we have decorated the Author class with the JPA @Entity decorator
+//to let JPA manage it! So this will be mapped to the author table!!!
+@Entity
 class Author {
+  //notify JPA this is the PK and must be autogenerated by hibernate...
+  //... in order to make hibernate generate the id we must add
+  // a sequence in Postgres with the exact name of 'hibernate_sequence'
+  @Id @GeneratedValue(strategy = GenerationType.AUTO)
   var id: Int = -1
   var first_name: String = ""
   var last_name: String = ""
   var nationality: String = ""
 }
 
-fun getAuthorById(ctx: RoutingContext) {
+fun getAuthorById(ctx: RoutingContext, emf: EntityManagerFactory) {
   //get the 'id' parameter from the request
   val id: Int = ctx.request().getParam("id").toInt()
 
-  //here we should make some query in some DB and get back the info...
-  //... let pretend we have and just populate a POJO
-  val ourAuthor = Author()
-  ourAuthor.id = id
-  ourAuthor.first_name = "John"
-  ourAuthor.last_name = "Grisham"
-  ourAuthor.nationality = "UK"
+  /* NEW NEW NEW */
+  val em = emf.createEntityManager() //create the central manipulation object for JPA operations (e.g. CRUD)
+
+  //query postgres for our author by using JPA -
+  val ourAuthor: Author = em.find(Author::class.java, id)
+
+  /* NEW NEW NEW */
+  em.close() //close the connection
 
   val response = ctx.response()
   //convert our POJO in a stringified JSON. you can think about this as a 2-phase transform:
@@ -132,16 +173,16 @@ fun getAuthorById(ctx: RoutingContext) {
 
 //this time we have no response to fill the body of: we just failed.
 //by setting the fail filed we redirect to the failure handler
-fun deleteAuthorByIdFails(ctx: RoutingContext) {
+fun deleteAuthorByIdFails(ctx: RoutingContext, emf: EntityManagerFactory) {
   val response = ctx.fail(404)
 }
 
+/* NEW NEW NEW */
+//added actual JPA persistance, removed id from JSON as it is autogenerated!!!!
+
 //test with:
-// curl -X PUT http://localhost:8080/addNewAuthor -H "Content-Type: application/json" -d "{\"id\":\"40\"}"
-// to see what happens with a partial info.
-//
-//or try with a full json:
-//curl -X PUT http://localhost:8080/addNewAuthor -H "Content-Type: application/json" -d "{\"id\":\"40\", \"first_name\":\"pippo\", \"last_name\":\"bill\", \"nationality\":\"belgian\"}"
+//try with a full json:
+//curl -X PUT http://localhost:8080/addNewAuthor -H "Content-Type: application/json" -d "{\"first_name\":\"pippo\", \"last_name\":\"bill\", \"nationality\":\"belgian\"}"
 //
 //or try with an empty one...
 //
@@ -149,13 +190,31 @@ fun deleteAuthorByIdFails(ctx: RoutingContext) {
 //curl -X PUT http://localhost:8080/addNewAuthor -H "Content-Type: application/json" -d "{\"forecast\":\"cloudy\"}"
 //or a mixed one!:
 //curl -X PUT http://localhost:8080/addNewAuthor -H "Content-Type: application/json" -d "{\"forecast\":\"cloudy\", \"first_name\":\"pippo\"}"
-fun addNewAuthor(ctx: RoutingContext) {
+fun addNewAuthor(ctx: RoutingContext, emf: EntityManagerFactory) {
   //get the payload
   val newAuthorInfoAsString = ctx.bodyAsString
   //this is the opposite of getAuthorById:
   //we convert the stringified JSON in a JSON object, we map it on our class!
   val newAuthor: Author = Json.decodeValue(newAuthorInfoAsString, Author::class.java)
 
+  /* store */
+
+  /* NEW NEW NEW */
+  val em = emf.createEntityManager() //create the central manipulation object for JPA operations (e.g. CRUD)
+
+  //1- open a transaction
+  em.transaction.begin();
+  //2- ask to manage this object
+  em.persist(newAuthor)
+  //3- actually INSERT it in DB
+  em.flush()
+  //4- commit the transaction
+  em.transaction.commit()
+
+  em.close() //close the connection
+
+  //now that the author has been persisted, Hibernate has defined her id, return it in the body
+
   //nothing to do with response just return an empty one with default status of 200
-  return ctx.response().end()
+  return ctx.response().end(Json.encode(newAuthor))
 }
