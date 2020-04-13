@@ -1,16 +1,13 @@
 /*
-THIS IS THE FOURTH EXAMPLE OF HOW TO USE VERT.X WEB. YOU CAN TEST THE ROUTES VIA CURL OR SIMILAR
-here we get rid of the blocking nature of a JPA backend and make vert.x not blame us.
-
-size: 26 MB
-boot: 10 sec
-memory after 2 queries: 395 MB
+THIS IS THE FIFITH EXAMPLE OF HOW TO USE VERT.X WEB. This is neither kotlin specific nor vert.x specific
+this is an exercise to look at the JPA/Jackson synthax in a one-to-One JPA relation in kotlin
 */
 
 package it.nunziatimatteo.skel
 
+import com.fasterxml.jackson.annotation.JsonIdentityInfo
+import com.fasterxml.jackson.annotation.ObjectIdGenerators
 import io.vertx.core.AbstractVerticle
-import io.vertx.core.AsyncResult
 import io.vertx.core.Promise
 import io.vertx.core.json.Json
 import io.vertx.ext.web.Router
@@ -30,41 +27,23 @@ class MainVerticle : AbstractVerticle() {
     mainRouter.route().handler(BodyHandler.create()) //request body extractor and formatter for all routes
     mainRouter.route().failureHandler { frc -> this.manageFailure(frc) } //failure manager for all routes
 
-    /* NEW NEW NEW */
-    //here we use the 'executeBlocking' promise to let blocking code run in background and return an async promise
-    //and everything else depending on it is executed into the response of the promise.
-    //an executeBlocking basically creates a promise, we catch the promise and we execute our blocking stuff asynchronously.
-    //when we have finished our computations we grab the promise we have catch and we push into it the result of our computations
-    //
-    //"on the other side" there is the main loop suspended (NOT BLOCKED) and waiting for us. the promise response catches the result we have push into the promise
-    //and let us manipulate it when it is ready.
-    //
-    //basically we suspend the entire main thread until hibernate - in the background - has build its factory. The we grab the factory and we use it.
-
     vertx.executeBlocking({ promise: Promise<Any> ->
 
-      val emf = Persistence.createEntityManagerFactory( "org.hibernate.tutorial.jpa" ) //init JPA from persistence.xml
-      promise.complete(emf) //put it into a promise
+      val emf = Persistence.createEntityManagerFactory( "org.hibernate.tutorial.jpa" )
+      promise.complete(emf) //put emf into a promise
 
     }) {
-      //this is the response of the promise and catches the emf value when it is init'ed. we use it a lambda.
-      //when a promise returns something, this something is wrapped into a generic object...
       promiseExecution ->
 
-        //... here we use the really expressive kotlin way to cast values and extract the original emf from the wrapper
         val emf = promiseExecution.result() as EntityManagerFactory
 
-        //this time we mock up a request info about a book's author by knowing her id. the response is a JSON.
         mainRouter.get("/authorById/:id").produces("text/json").handler { ctx -> getAuthorById(ctx, emf) }
 
-        //this time we are asked to DELETE an author by id, this is useful to mock an error of a request
+        //NEW NEW NEW - added a new method
+        mainRouter.get("/scoreById/:id").produces("text/json").handler { ctx -> getScoreById(ctx, emf) }
         mainRouter.delete("/deleteAuthorByIdFails/:id").handler { ctx -> deleteAuthorByIdFails(ctx, emf) }
-
-        //this is a PUT and we can use this to learn how to receive a JSON from the request body,
-        //among other things we can send wrong contents in the JSON or partial contents. This will let us
-        //experiment with exception handling the the route handler, or, better, with the 'failureHandler'
         mainRouter.put("/addNewAuthor").consumes("application/json").produces("application/json").handler { ctx -> addNewAuthor(ctx, emf) }
-
+        
         //try to run the server on port 8080 on 0.0.0.0, using the router we have created to manage http end-points.
         //if anything fails an error will be shown...
         theServer.requestHandler(mainRouter).listen(8080) { http ->
@@ -108,32 +87,69 @@ class MainVerticle : AbstractVerticle() {
 /* HERE ARE SOME ROUTES EXAMPLES. DO NOT KEEP YOUR FUNCTION BODIES HERE, RATHER PUT THEM IN THE APPROPRIATE CLASSPATH */
 
 @Entity
+//this is used to tell the json serializer (jackson) to cut possible recursions caused by
+//what is known as "bidirectional relation" in JPA
+@JsonIdentityInfo(generator = ObjectIdGenerators.PropertyGenerator::class, property = "id")
 class Author {
-  //in order to make hibernate generate the id we must add
-  // a sequence in Postgres with the exact name of 'hibernate_sequence'
   @Id @GeneratedValue(strategy = GenerationType.AUTO)
   var id: Int = -1
   var first_name: String = ""
   var last_name: String = ""
   var nationality: String = ""
+
+  //this means that there is a table somewhare that we have mapped with the UserScore class
+  //and that refers to this entity by using a foreign key.
+  //One good thing of JPA is that we can ask to revert the relation and get the record referencing us!
+  //anyway this leads to a recursion - hence the @Json... decorator to cut recursion
+  @OneToOne(mappedBy = "author")
+  var score: UserScore? = null
+}
+
+//NEW NEW NEW
+@Entity
+@Table(name="user_score")
+@JsonIdentityInfo(generator = ObjectIdGenerators.PropertyGenerator::class, property = "score")
+class UserScore {
+  @Id @GeneratedValue(strategy = GenerationType.AUTO)
+  var id: Int = -1
+  var score: Int = 0
+
+  //this is a foreign key in JPA speaking
+  //as we map this relation here but also in the reversed class Author, we need a Json decorator here too...
+  @OneToOne()
+  @JoinColumn(name = "author_id", referencedColumnName = "id")
+  var author: Author = Author()
 }
 
 fun getAuthorById(ctx: RoutingContext, emf: EntityManagerFactory) {
-  //get the 'id' parameter from the request
   val id: Int = ctx.request().getParam("id").toInt()
 
   val em = emf.createEntityManager()
-  val ourAuthor: Author = em.find(Author::class.java, id)
-  em.close() //close the connection
+ val ourAuthor: Author = em.find(Author::class.java, id)
 
   val response = ctx.response()
   val payload = Json.encode(ourAuthor)
 
+  em.close()
+
   return response.end(payload)
 }
 
-//this time we have no response to fill the body of: we just failed.
-//by setting the fail filed we redirect to the failure handler
+//NEW NEW NEW - as per author but expects to find something into a table named "user_score"
+fun getScoreById(ctx: RoutingContext, emf: EntityManagerFactory) {
+  val id: Int = ctx.request().getParam("id").toInt()
+
+  val em = emf.createEntityManager()
+  val ourScore: UserScore = em.find(UserScore::class.java, id)
+
+  val response = ctx.response()
+  val payload = Json.encode(ourScore)
+
+  em.close()
+
+  return response.end(payload)
+}
+
 fun deleteAuthorByIdFails(ctx: RoutingContext, emf: EntityManagerFactory) {
   val response = ctx.fail(404)
 }
